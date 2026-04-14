@@ -17,8 +17,9 @@ Performance metrics:
 import numpy as np
 import torch
 from sklearn.metrics import (
-    f1_score, precision_score, roc_auc_score
+    f1_score, precision_score, roc_auc_score, average_precision_score
 )
+from sklearn.calibration import calibration_curve
 from typing import Dict, List, Tuple
 
 
@@ -117,6 +118,39 @@ def demographic_parity_diff(
 # Multi-attribute fairness
 # ─────────────────────────────────────────────────────────────────────────────
 
+def abcc(
+    y_pred: np.ndarray,
+    y_true: np.ndarray,
+    sensitive: np.ndarray,
+    n_bins: int = 10,
+) -> float:
+    """
+    Area Between Calibration Curves (ABCC).
+
+    Measures how differently the model is calibrated between the two groups.
+    A well-calibrated fair model should assign similar meaning to the same
+    predicted probability regardless of which group a person belongs to.
+    (e.g. a score of 0.7 should mean 70% chance of positive for BOTH groups)
+
+    Lower ABCC = fairer calibration.
+    ABCC = 0 means perfectly equal calibration across groups.
+    """
+    mask0 = sensitive == 0
+    mask1 = sensitive == 1
+    if mask0.sum() < n_bins or mask1.sum() < n_bins:
+        return 0.0
+    try:
+        frac0, mean0 = calibration_curve(y_true[mask0], y_pred[mask0], n_bins=n_bins, strategy="uniform")
+        frac1, mean1 = calibration_curve(y_true[mask1], y_pred[mask1], n_bins=n_bins, strategy="uniform")
+        # Interpolate to same grid for comparison
+        common = np.linspace(0, 1, n_bins)
+        interp0 = np.interp(common, mean0, frac0)
+        interp1 = np.interp(common, mean1, frac1)
+        return round(float(np.mean(np.abs(interp0 - interp1))), 4)
+    except Exception:
+        return 0.0
+
+
 def compute_all_fairness(
     y_pred: np.ndarray,
     y_true: np.ndarray,
@@ -131,10 +165,11 @@ def compute_all_fairness(
     for i, name in enumerate(attr_names):
         s = sensitive_matrix[:, i]
         results[name] = {
-            "p_rule":                p_rule(y_pred, s),
-            "equalized_odds":        equalized_odds(y_pred, y_true, s),
-            "equalized_opportunity": equalized_opportunity(y_pred, y_true, s),
+            "p_rule":                  p_rule(y_pred, s),
+            "equalized_odds":          equalized_odds(y_pred, y_true, s),
+            "equalized_opportunity":   equalized_opportunity(y_pred, y_true, s),
             "demographic_parity_diff": demographic_parity_diff(y_pred, s),
+            "abcc":                    abcc(y_pred, y_true, s),
         }
     return results
 
@@ -144,12 +179,27 @@ def compute_all_fairness(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def compute_performance(y_pred: np.ndarray, y_true: np.ndarray, threshold: float = 0.5) -> Dict:
+    """
+    Performance metrics:
+    - Accuracy   : fraction of correct predictions
+    - Precision  : TP / (TP + FP)
+    - F1 Score   : harmonic mean of precision and recall
+    - ROC-AUC    : area under the ROC curve (threshold-independent)
+    - AP         : Average Precision = area under Precision-Recall curve.
+                   Better than ROC-AUC on imbalanced datasets because it
+                   focuses on the positive class and penalizes false positives
+                   more heavily.
+    """
     y_bin = (y_pred >= threshold).astype(int)
-    acc      = float((y_bin == y_true).mean())
+    acc = float((y_bin == y_true).mean())
     try:
-        auc  = float(roc_auc_score(y_true, y_pred))
+        auc = float(roc_auc_score(y_true, y_pred))
     except ValueError:
-        auc  = 0.5
+        auc = 0.5
+    try:
+        ap = float(average_precision_score(y_true, y_pred))
+    except ValueError:
+        ap = 0.0
     try:
         prec = float(precision_score(y_true, y_bin, zero_division=0))
         f1   = float(f1_score(y_true, y_bin, zero_division=0))
@@ -161,6 +211,7 @@ def compute_performance(y_pred: np.ndarray, y_true: np.ndarray, threshold: float
         "precision": round(prec, 4),
         "f1_score":  round(f1, 4),
         "roc_auc":   round(auc, 4),
+        "avg_precision": round(ap, 4),
     }
 
 

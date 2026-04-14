@@ -6,7 +6,7 @@ using a ReAct agent (local LLMs via Ollama are unreliable with tool-calling).
 
 LLM is still used for:
   - identify_sensitive: reads dataset schema → sensitive attrs + binarization rules
-  - decide_initial_lambda: reads long-term memory → warm-start λ
+  - decide_initial_lambda: reads dataset schema → conservative warm-start λ
   - detect_proxies: interprets proxy features semantically
   - decide_lambda_for_iteration: LCEL chain, called per training iteration
 """
@@ -62,7 +62,7 @@ def run_pipeline(
     load_dataset.invoke({"dataset_path": dataset_path, "dataset_name": name})
 
     print(f"\n{SEP}")
-    print(f"  Step 3/5 -- Decide initial lambda (long-term memory)")
+    print(f"  Step 3/5 -- Decide initial lambda (dataset schema)")
     print(SEP)
     n_sensitive = len(state.sensitive_attrs)
     decide_initial_lambda.invoke({"n_sensitive": n_sensitive})

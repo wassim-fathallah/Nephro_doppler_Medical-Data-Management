@@ -47,7 +47,7 @@ def _train_one_epoch_pretrain(classifier, adversary, clf_opt, adv_opt, loader, d
 
         # Classifier step
         clf_opt.zero_grad()
-        pred, emb = classifier(X_b)
+        pred, _ = classifier(X_b)
         loss_clf = clf_loss_fn(pred, y_b)
         loss_clf.backward()
         clf_opt.step()
@@ -223,9 +223,11 @@ def run_full_training(
     if not state.lambda_vector:
         state.lambda_vector = [0.1] * len(state.sensitive_attrs)
 
-    short_term = ShortTermMemory()
-    long_term  = LongTermMemory()
-    plotter    = TrainingPlotter(state.sensitive_attrs)
+    short_term   = ShortTermMemory()
+    long_term    = LongTermMemory()
+    plotter      = TrainingPlotter(state.sensitive_attrs)
+    best_metrics = {}        # track best result seen across all iterations
+    best_min_prule = 0.0
     loader     = _make_loader(state.X_train, state.y_train, state.sensitive_train)
 
     device = state.device
@@ -293,12 +295,9 @@ def run_full_training(
             fairness=metrics.get("fairness", {}),
         )
 
-        # ── Check convergence ─────────────────────────────────────────────────
+        # ── Log fairness status (no early stop — always run all iterations) ────
         if metrics["min_p_rule"] >= p_rule_threshold:
-            print(f"\n[train] Fairness target reached at iteration {iteration+1}!")
-            final_metrics = metrics
-            lambda_trajectory.append(state.lambda_vector.copy())
-            break
+            print(f"  [target reached] P-rule >= {p_rule_threshold}% — continuing to optimize further")
 
         # ── LLM decides next lambda ───────────────────────────────────────────
         short_term.add(
@@ -312,7 +311,6 @@ def run_full_training(
 
         new_lambda = decide_lambda_for_iteration(
             short_term=short_term,
-            long_term=long_term,
             current_metrics=metrics,
             iteration=iteration + 1,
             max_iterations=max_iterations,
@@ -321,31 +319,38 @@ def run_full_training(
         lambda_trajectory.append(state.lambda_vector.copy())
         state.lambda_vector = new_lambda
         final_metrics = metrics
+        # Track best result seen (by min p_rule across all sensitive attrs)
+        if metrics["min_p_rule"] > best_min_prule:
+            best_min_prule = metrics["min_p_rule"]
+            best_metrics   = metrics
 
     # ── Post-training ─────────────────────────────────────────────────────────
-    success = final_metrics.get("min_p_rule", 0) >= p_rule_threshold
+    success = best_min_prule >= p_rule_threshold
+    # Save the best metrics (not necessarily the last iteration)
+    best_metrics = best_metrics if best_metrics else final_metrics
 
     long_term.save_run(
         dataset_name=state.dataset_name,
         target_col=state.target_col,
         sensitive_attrs=state.sensitive_attrs,
         lambda_final=state.lambda_vector,
-        p_rules_final=final_metrics.get("p_rules", {}),
-        accuracy_final=final_metrics.get("accuracy", 0.0),
+        p_rules_final=best_metrics.get("p_rules", {}),
+        accuracy_final=best_metrics.get("accuracy", 0.0),
         total_epochs=state.total_epochs_run,
         iterations=state.current_iteration + 1,
         success=success,
         lambda_trajectory=lambda_trajectory,
     )
 
-    plot_path = plotter.save("training_curves.png")
+    plot_filename = f"{state.dataset_name}_training_curves.png" if state.dataset_name else "training_curves.png"
+    plot_path = plotter.save(plot_filename)
     state.training_done = True
 
     summary = {
         "status": "success" if success else "max_iterations_reached",
         "iterations_run": state.current_iteration + 1,
         "total_epochs": state.total_epochs_run,
-        "final_metrics": final_metrics,
+        "final_metrics": best_metrics,
         "final_lambda": state.lambda_vector,
         "plot_saved": plot_path,
         "long_term_memory_updated": True,

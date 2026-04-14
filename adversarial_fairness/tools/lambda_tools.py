@@ -28,7 +28,6 @@ from langchain_core.output_parsers import StrOutputParser
 
 from state import state
 from memory.short_term import ShortTermMemory
-from memory.long_term import LongTermMemory
 
 llm = OllamaLLM(model="llama3.1", temperature=0.2)
 
@@ -55,9 +54,6 @@ Current metrics:
 
 === SHORT-TERM MEMORY (this run's trajectory) ===
 {short_term_history}
-
-=== LONG-TERM MEMORY (past runs on this dataset) ===
-{long_term_context}
 
 === YOUR TASK ===
 Decide the next λ vector. Rules:
@@ -105,7 +101,6 @@ def _extract_lambda_json(text: str, n_attrs: int, attr_names: List[str]) -> List
 
 def decide_lambda_for_iteration(
     short_term: ShortTermMemory,
-    long_term: LongTermMemory,
     current_metrics: Dict[str, Any],
     iteration: int,
     max_iterations: int,
@@ -125,9 +120,6 @@ def decide_lambda_for_iteration(
         "adv_loss": current_metrics.get("adversary_loss", 0.0),
         "threshold": state.p_rule_threshold,
         "short_term_history": short_term.to_prompt_str(n=6),
-        "long_term_context": long_term.to_prompt_str(
-            state.dataset_name, state.target_col, state.sensitive_attrs
-        ),
         "lambda_max": lambda_max,
     })
 
@@ -145,40 +137,45 @@ def decide_lambda_for_iteration(
 def decide_initial_lambda(n_sensitive: int = 2) -> str:
     """
     Decides the INITIAL lambda vector before training starts.
-    Uses only long-term memory (no short-term yet).
+    Uses only dataset schema (name, target, sensitive attrs, size) — no past runs.
     Returns a JSON string with the initial lambda values and reasoning.
     Call this exactly ONCE before pretraining.
     """
-    # Idempotent: if already set (agent called this multiple times), return cached result
     if state.lambda_vector:
         return json.dumps({"initial_lambda": state.lambda_vector, "reasoning": "Already set, returning cached."}, indent=2)
 
-    # Use actual n_sensitive from state if available
     n_sensitive = len(state.sensitive_attrs) if state.sensitive_attrs else n_sensitive
 
-    long_term = LongTermMemory()
-    warm_start = long_term.suggest_initial_lambda(
-        state.dataset_name, state.target_col, state.sensitive_attrs, n_sensitive
-    )
-    past_context = long_term.to_prompt_str(
-        state.dataset_name, state.target_col, state.sensitive_attrs
-    )
+    # Build dataset size info from state if data is already loaded
+    size_info = ""
+    if state.X_train is not None:
+        n_samples = state.X_train.shape[0]
+        n_features = state.X_train.shape[1]
+        size_info = f"Training samples: {n_samples}, Features: {n_features}"
 
-    prompt = f"""You are initializing lambda values for adversarial fairness training.
+    prompt = f"""You are initializing lambda (λ) values for adversarial fairness training.
 
+The system trains a classifier with a fairness penalty:
+  L_total = L_task - λ * L_adversary
+Higher λ → stronger pressure to hide sensitive attributes from the classifier's embeddings.
+Each sensitive attribute has its own λ. They will be adapted at every training iteration.
+
+=== DATASET SCHEMA ===
 Dataset: {state.dataset_name}
-Target: {state.target_col}
+Target column: {state.target_col}
 Sensitive attributes: {state.sensitive_attrs}
-Suggested warm-start from past runs: {warm_start}
+{size_info}
 
-Past runs on this dataset:
-{past_context}
+=== YOUR TASK ===
+Choose a conservative initial λ vector. This is just the starting point — the LLM will
+adjust λ at every iteration based on real metrics. Rules:
+- Start small (0.1–1.0). Too high risks destroying accuracy before training stabilizes.
+- If a sensitive attribute is known to be highly correlated with the target in this dataset
+  (e.g. sex in adult income, race in COMPAS), you can start slightly higher (0.5–1.0).
+- All λ values must be >= 0.
 
-Choose initial lambda values. If no past experience, start small (0.1-0.5).
-If past runs needed high lambda to converge, start around 50% of that.
-
-Respond with ONLY:
-{{"reasoning": "...", "initial_lambda": [0.3, 0.2]}}
+Respond with ONLY this JSON:
+{{"reasoning": "2-3 sentence explanation", "initial_lambda": [0.3, 0.2]}}
 """
     response = llm.invoke(prompt)
     try:
@@ -186,8 +183,8 @@ Respond with ONLY:
         lambdas = [float(x) for x in parsed["initial_lambda"]][:n_sensitive]
         reasoning = parsed.get("reasoning", "")
     except Exception:
-        lambdas = warm_start[:n_sensitive]
-        reasoning = "Using warm-start from long-term memory (LLM parsing failed)."
+        lambdas = [0.1] * n_sensitive
+        reasoning = "LLM parsing failed — falling back to default small λ=0.1."
 
     state.lambda_vector = lambdas
     result = {"initial_lambda": lambdas, "reasoning": reasoning}

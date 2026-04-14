@@ -206,9 +206,18 @@ def load_dataset(dataset_path: str, dataset_name: str = "") -> str:
         pos_target = unique_targets[1]
         y = (target_series == pos_target).astype(int).values
     else:
-        # Numeric: binarize at median
-        med = target_series.median()
-        y = (target_series > med).astype(int).values
+        # Multiclass: try numeric median, else label-encode then split at median
+        numeric_target = pd.to_numeric(target_series, errors="coerce")
+        if numeric_target.notna().sum() > len(target_series) * 0.9:
+            med = numeric_target.median()
+            y = (numeric_target > med).astype(int).values
+        else:
+            # Categorical with >2 classes: encode and split at median code
+            codes = pd.Categorical(target_series).codes
+            med = np.median(codes)
+            y = (codes > med).astype(int)
+            print(f"[warn] Target '{state.target_col}' has {len(unique_targets)} string classes — "
+                  f"binarized by label-code median ({med:.0f})")
 
     df.drop(columns=[state.target_col], inplace=True)
 
