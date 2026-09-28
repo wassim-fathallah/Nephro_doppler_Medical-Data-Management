@@ -38,8 +38,8 @@ The system enables **digitization of patient records** (photos/videos) and integ
 
 
 ## 🙏 Acknowledgments
-Special thanks to **REGIM Lab (ENIS)** and **Hedi Chaker Hospital nephrologists** for data access and support.  
-Developed by **Adam Alimi**.  
+Special thanks to **LARODEC laboratory** and **Hedi Chaker Hospital nephrologists** for data access and support.  
+Developed by **Wassim Fathallah**.  
 
 📄 Licensed under MIT.  
 
